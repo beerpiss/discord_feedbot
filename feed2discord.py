@@ -406,7 +406,7 @@ async def build_message(FEED, item, channel):
 
 
 # This schedules an 'actually_send_message' coroutine to run
-async def send_message_wrapper(asyncioloop, FEED, feed, channel, client, message):
+async def send_message_wrapper(asyncioloop, FEED, feed, channel, client, message, feed_title):
     delay = FEED.getint(channel["name"] + ".delay", FEED.getint("delay", 0))
     logger.info(
         feed + ":" + channel["name"] +
@@ -418,14 +418,15 @@ async def send_message_wrapper(asyncioloop, FEED, feed, channel, client, message
             message,
             delay,
             FEED,
-            feed))
+            feed,
+            feed_title))
     logger.info(feed + ":" + channel["name"] + ":message scheduled")
 
 
 # Simply sleeps for delay and then sends message.
 
 
-async def actually_send_message(channel, message, delay, FEED, feed):
+async def actually_send_message(channel, message, delay, FEED, feed, feed_title):
     if await should_send_typing(FEED, feed):
         await channel["object"].send_typing()
 
@@ -440,7 +441,13 @@ async def actually_send_message(channel, message, delay, FEED, feed):
         await asyncio.sleep(delay)
 
     logger.info("%s:%s:actually sending message", feed, channel["name"])
-    msg = await channel["object"].send(message)
+
+    if channel["webhook"]:
+        async with aiohttp.ClientSession() as session:
+            webhook = discord.Webhook.from_url(channel["webhook"], session=session)
+            msg = await webhook.send(message, username=feed_title)
+    else:
+        msg = await channel["object"].send(message)
 
     # if publish=1, channel is news/announcement and we have manage_messsages,
     # then "publish" so it goes to all servers
@@ -486,13 +493,14 @@ async def background_check_feed(feed, asyncioloop):
     for key in FEED.get("channels").split(","):
         # stick a dict in the channels array so we have more to work with
         channel_id = config["CHANNELS"].getint(key)
+        webhook_url = config["WEBHOOKS"].get(key)
         logger.info(feed + ": adding channel " + key + ":" + str(channel_id))
 
         channel_obj = client.get_channel(channel_id)
         logger.info(pformat(channel_obj))
         if channel_obj is not None:
             channels.append(
-                {"object": channel_obj, "name": key, "id": channel_id}
+                {"object": channel_obj, "name": key, "id": channel_id, "webhook": webhook_url}
             )
             logger.info(feed + ": added channel " + key)
         else:
@@ -831,7 +839,7 @@ async def background_check_feed(feed, asyncioloop):
                                     + channel["name"]
                                 )
                                 await send_message_wrapper(
-                                    asyncioloop, FEED, feed, channel, client, message
+                                    asyncioloop, FEED, feed, channel, client, message, feed_data["feed"]["title"]
                                 )
                             else:
                                 logger.info(
